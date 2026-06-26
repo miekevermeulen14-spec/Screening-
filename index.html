@@ -1378,19 +1378,8 @@ function downloadReport(id) {
   db.ref('reports/' + id).once('value').then(snap => {
     const data = snap.val();
     if (data && data.pdf) {
-      // Convert data URI to Blob for better mobile support
-      const parts = data.pdf.split(',');
-      const byteString = atob(parts[1]);
-      const ab = new ArrayBuffer(byteString.length);
-      const ia = new Uint8Array(ab);
-      for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
-      const blob = new Blob([ab], {type: 'application/pdf'});
-      const blobUrl = URL.createObjectURL(blob);
-      // Open PDF in new tab (works on all devices including mobile)
-      window.open(blobUrl, '_blank');
-      btn.textContent = 'Report opened!';
-      btn.style.background = '#16a34a';
-      btn.style.color = 'white';
+      // Show PDF directly on the page
+      window.location.href = data.pdf;
     } else {
       btn.textContent = 'Report not found';
       btn.style.background = '#dc2626';
