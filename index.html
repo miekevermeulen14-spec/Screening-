@@ -1243,20 +1243,17 @@ ${settings.practiceContact||''}`);
     return;
   }
 
-  // Generate PDF, upload to Firebase, and email download link
+  // Save report data to Firebase (small, fast) so parent can generate PDF
   showToast('Preparing report for ' + s.parentEmail + '...');
-  const doc = generateReportBlob();
-  const pdfBase64 = doc.output('datauristring');
-
-  // Save PDF to Firebase so parent can download it
   const reportId = s.id + '_' + Date.now();
   if (db) { try {
     await db.ref('reports/' + reportId).set({
-      pdf: pdfBase64,
-      childName: s.firstName + ' ' + s.lastName,
+      student: { firstName: s.firstName, lastName: s.lastName, dob: s.dob, gender: s.gender, school: s.school, grade: s.grade, teacher: s.teacher, parentName: s.parentName, parentEmail: s.parentEmail, parentPhone: s.parentPhone, wearsGlasses: s.wearsGlasses, prevIssues: s.prevIssues, complaints: s.complaints, medicalConditions: s.medicalConditions, familyHistory: s.familyHistory },
+      assessment: s.assessment,
+      settings: { practiceName: settings.practiceName, practiceContact: settings.practiceContact, bookingUrl: settings.bookingUrl, logo: settings.logo || '' },
       createdAt: new Date().toISOString()
     });
-  } catch(e) { console.error('PDF upload error:', e); } }
+  } catch(e) { console.error('Report save error:', e); } }
 
   const downloadLink = window.location.origin + window.location.pathname + '?report=' + reportId;
 
@@ -1377,15 +1374,107 @@ function downloadReport(id) {
   if (!db) { btn.textContent = 'Error — database not available'; return; }
   db.ref('reports/' + id).once('value').then(snap => {
     const data = snap.val();
-    if (data && data.pdf) {
-      // Show PDF directly on the page
-      window.location.href = data.pdf;
+    if (data && data.student) {
+      btn.textContent = 'Generating PDF...';
+      // Generate PDF from stored data (fast, works on all devices)
+      const s = data.student;
+      const a = data.assessment || {};
+      const st = data.settings || {};
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF('p','mm','a4');
+      const W = 210; let y = 12;
+      const bookUrl = st.bookingUrl || 'www.eyesat.co.za';
+      const recText = a.recommendation ? ({"rec_pass":"The visual screening indicates that your child's visual system is effective, and no further intervention is required at this stage.","rec_farsight":"The outcome of your child's visual screening shows signs of farsightedness and visual discomfort. This may be normal for your child's age, however, should your child experience difficulties with schoolwork and concentration, please make an appointment with your optometrist for a comprehensive visual examination.","rec_functional":"The visual screening pointed out that your child has difficulties with his/her functional vision. Please make an urgent appointment at your optometrist for a functional visual examination.","rec_urgent":"The visual screening pointed out that areas of your child's visual system need urgent intervention. Please contact your optometrist for a comprehensive visual examination."})[a.recommendation] || '' : '';
+
+      // Header
+      doc.setFillColor(26,26,26); doc.rect(0,0,W,30,'F');
+      doc.setFillColor(212,160,23); doc.rect(0,30,W,2,'F');
+      doc.setTextColor(245,197,24); doc.setFontSize(20); doc.setFont(undefined,'bold');
+      doc.text(st.practiceName || 'Eyes at the Aviary', W/2, 13, {align:'center'});
+      doc.setFontSize(11); doc.setFont(undefined,'normal');
+      doc.text('SCHOOL VISION SCREENING REPORT', W/2, 21, {align:'center'});
+      if (st.practiceContact) { doc.setFontSize(8); doc.text(st.practiceContact.replace(/\\n/g,' · '), W/2, 27, {align:'center'}); }
+
+      // Disclaimer
+      y = 38; doc.setFillColor(255,248,220); doc.rect(10,y-4,W-20,12,'F');
+      doc.setDrawColor(212,160,23); doc.rect(10,y-4,W-20,12,'S');
+      doc.setTextColor(80); doc.setFontSize(7); doc.setFont(undefined,'italic');
+      doc.text('PLEASE NOTE: A screening can never replace a full comprehensive visual examination.', W/2, y+2, {align:'center'});
+
+      // Patient info
+      y = 56; doc.setTextColor(26,26,26); doc.setFontSize(11); doc.setFont(undefined,'bold');
+      doc.text('Patient Information', 14, y);
+      y += 6; doc.setFontSize(9); doc.setFont(undefined,'normal');
+      doc.text('Name: ' + s.firstName + ' ' + s.lastName, 14, y);
+      doc.text('DOB: ' + (s.dob||''), 110, y);
+      y += 5; doc.text('School: ' + (s.school||''), 14, y);
+      doc.text('Grade: ' + (s.grade||''), 110, y);
+      y += 5; doc.text('Parent: ' + (s.parentName||''), 14, y);
+      doc.text('Date: ' + (a.screening_date||''), 110, y);
+
+      // Pyramid of Vision
+      y += 10; doc.setFontSize(11); doc.setFont(undefined,'bold');
+      doc.text('Pyramid of Vision', 14, y);
+      y += 6; doc.setFontSize(9);
+      const pyrItems = [['pyr_clarity','CLARITY OF VISION'],['pyr_anatomy','EYE ANATOMY'],['pyr_focus','ABILITY TO FOCUS'],['pyr_muscle','MUSCLE STRENGTH'],['pyr_3d','3D VISION']];
+      pyrItems.forEach(([key, label]) => {
+        const val = a[key] || '-';
+        doc.setFont(undefined,'normal'); doc.text(label + ':', 14, y);
+        if (val === 'NORMAL') doc.setTextColor(22,163,74);
+        else if (val === 'ABNORMAL') doc.setTextColor(220,38,38);
+        else if (val === 'MODERATE') doc.setTextColor(217,119,6);
+        doc.setFont(undefined,'bold'); doc.text(val, 80, y);
+        doc.setTextColor(26,26,26); y += 5;
+      });
+
+      // Refraction
+      y += 5; doc.setFontSize(11); doc.setFont(undefined,'bold');
+      doc.text('Refraction Findings', 14, y);
+      y += 6; doc.setFontSize(9); doc.setFont(undefined,'normal');
+      const refItems = [['ref_farsighted','Suspected Farsightedness'],['ref_latent_hyp','Suspected Latent Hyperopia'],['ref_nearsighted','Suspected Near-sightedness'],['ref_astigmatism','Suspected Astigmatism'],['ref_amblyopia','Suspected Amblyopia'],['ref_strabismus','Suspected Strabismus']];
+      refItems.forEach(([key, label]) => {
+        doc.text((a[key] ? '☒' : '☐') + ' ' + label, 14, y); y += 5;
+      });
+
+      // VA
+      y += 5; doc.setFontSize(11); doc.setFont(undefined,'bold');
+      doc.text('Visual Acuity', 14, y);
+      y += 6; doc.setFontSize(9); doc.setFont(undefined,'normal');
+      doc.text('RE Unaided: ' + (a.va_re_unaided||'-') + '   LE Unaided: ' + (a.va_le_unaided||'-'), 14, y);
+      y += 5; doc.text('RE Aided: ' + (a.va_re_aided||'-') + '   LE Aided: ' + (a.va_le_aided||'-'), 14, y);
+
+      // Recommendation
+      if (recText) {
+        y += 10; doc.setFontSize(11); doc.setFont(undefined,'bold');
+        doc.text('Recommendation', 14, y);
+        y += 6; doc.setFontSize(9); doc.setFont(undefined,'normal');
+        const lines = doc.splitTextToSize(recText, W - 28);
+        doc.text(lines, 14, y); y += lines.length * 4.5;
+      }
+
+      // Practitioners
+      y += 10; doc.setFontSize(9); doc.setFont(undefined,'bold');
+      doc.text('Martelie Burger', 14, y);
+      doc.text('Mieke Vermeulen', 110, y);
+      y += 4; doc.setFont(undefined,'normal'); doc.setFontSize(8);
+      doc.text('B.Optom(UFS) FOA (SA) Prof Cert Paeds(UK)', 14, y);
+      doc.text('B.Optom(UFS)', 110, y);
+
+      // Book here
+      y += 12; doc.setFillColor(212,160,23); doc.roundedRect(W/2-30, y-4, 60, 12, 3, 3, 'F');
+      doc.setTextColor(26,26,26); doc.setFontSize(12); doc.setFont(undefined,'bold');
+      doc.textWithLink('BOOK HERE', W/2, y+4, {align:'center', url:'https://'+bookUrl.replace(/^https?:\\/\\//,'')});
+
+      // Save/open PDF
+      const pdfBlob = doc.output('blob');
+      const blobUrl = URL.createObjectURL(pdfBlob);
+      window.location.href = blobUrl;
     } else {
       btn.textContent = 'Report not found';
       btn.style.background = '#dc2626';
       btn.style.color = 'white';
     }
-  }).catch(() => { btn.textContent = 'Error — try again'; });
+  }).catch(err => { console.error(err); btn.textContent = 'Error — try again'; });
 }
 
 if (reportId) {
