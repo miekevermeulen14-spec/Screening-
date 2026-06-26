@@ -1345,7 +1345,7 @@ function clearAllData() {
 }
 function showToast(msg) { const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),3000); }
 
-load(); loadSettingsUI();
+const isAdmin = new URLSearchParams(window.location.search).has('admin'); if (!isAdmin) {   document.getElementById('mainNav').style.display = 'none';   document.getElementById('page-dashboard').remove();   document.getElementById('page-settings').remove();   document.getElementById('page-registration').classList.add('active'); } load(); if (isAdmin) loadSettingsUI();
 </script>
 </body>
 </html>
