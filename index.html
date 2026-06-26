@@ -646,7 +646,7 @@ body {
           <code style="background:#eee;padding:2px 6px;border-radius:4px;">{{date}}</code>
           <code style="background:#eee;padding:2px 6px;border-radius:4px;">{{recommendation}}</code>
           <code style="background:#eee;padding:2px 6px;border-radius:4px;">{{booking_url}}</code>
-          <code style="background:#eee;padding:2px 6px;border-radius:4px;">{{pdf_report}}</code>
+          <code style="background:#eee;padding:2px 6px;border-radius:4px;">{{download_link}}</code>
         </li>
         <li>Copy your Public Key, Service ID, and Template ID here</li>
       </ol>
@@ -668,6 +668,14 @@ body {
 <div class="toast" id="toast"></div>
 
 <script>
+// ═══════ DATA ═══════
+let students = [];
+let settings = { practiceName: 'Eyes at the Aviary', bookingUrl: 'www.eyesat.co.za' };
+let currentStudentId = null;
+let currentLang = 'en';
+let firebaseReady = false;
+let db = null;
+
 // ═══════ FIREBASE ═══════
 const firebaseConfig = {
   apiKey: "AIzaSyAbJSNL_Zshfswr_lgRJJvEo-SiTn2Gqn8",
@@ -675,15 +683,12 @@ const firebaseConfig = {
   databaseURL: "https://eyes-school-screening-default-rtdb.europe-west1.firebasedatabase.app",
   projectId: "eyes-school-screening"
 };
-firebase.initializeApp(firebaseConfig);
-const db = firebase.database();
-
-// ═══════ DATA ═══════
-let students = [];
-let settings = { practiceName: 'Eyes at the Aviary', bookingUrl: 'www.eyesat.co.za' };
-let currentStudentId = null;
-let currentLang = 'en';
-let firebaseReady = false;
+try {
+  if (typeof firebase !== 'undefined') {
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.database();
+  }
+} catch(e) { console.error('Firebase init error:', e); }
 
 // ═══════ TRANSLATIONS ═══════
 const T = { af: {
@@ -707,7 +712,7 @@ function toggleLang() {
 // ═══════ STORAGE (Firebase + localStorage cache) ═══════
 function save() {
   try { localStorage.setItem('eata_students', JSON.stringify(students)); localStorage.setItem('eata_settings', JSON.stringify(settings)); } catch(e) {}
-  // Sync to Firebase
+  if (!db) return;
   try {
     const studentsObj = {};
     students.forEach(s => { studentsObj[s.id] = s; });
@@ -717,11 +722,12 @@ function save() {
 }
 function saveStudent(student) {
   try { localStorage.setItem('eata_students', JSON.stringify(students)); } catch(e) {}
-  try { db.ref('students/' + student.id).set(student); } catch(e) { console.error('Firebase save error:', e); }
+  if (db) { try { db.ref('students/' + student.id).set(student); } catch(e) { console.error('Firebase save error:', e); } }
 }
 function load() {
   // Load from localStorage first (fast)
   try { const s=localStorage.getItem('eata_students'),st=localStorage.getItem('eata_settings'); if(s) students=JSON.parse(s); if(st) settings=JSON.parse(st); } catch(e) {}
+  if (!db) return;
   // Then sync from Firebase (overrides localStorage)
   db.ref('students').on('value', snap => {
     const data = snap.val();
@@ -737,6 +743,8 @@ function load() {
     if (data) {
       settings = data;
       try { localStorage.setItem('eata_settings', JSON.stringify(settings)); } catch(e) {}
+      // Init EmailJS when settings arrive from Firebase
+      if (settings.emailjsPublicKey) { try { emailjs.init(settings.emailjsPublicKey); } catch(e){} }
       loadSettingsUI();
     }
   });
@@ -1235,9 +1243,22 @@ ${settings.practiceContact||''}`);
     return;
   }
 
-  // Generate PDF and also trigger download
-  showToast('Sending report to ' + s.parentEmail + '...');
-  generateReport(); // download PDF for records
+  // Generate PDF, upload to Firebase, and email download link
+  showToast('Preparing report for ' + s.parentEmail + '...');
+  const doc = generateReportBlob();
+  const pdfBase64 = doc.output('datauristring');
+
+  // Save PDF to Firebase so parent can download it
+  const reportId = s.id + '_' + Date.now();
+  if (db) { try {
+    await db.ref('reports/' + reportId).set({
+      pdf: pdfBase64,
+      childName: s.firstName + ' ' + s.lastName,
+      createdAt: new Date().toISOString()
+    });
+  } catch(e) { console.error('PDF upload error:', e); } }
+
+  const downloadLink = window.location.origin + window.location.pathname + '?report=' + reportId;
 
   try {
     emailjs.init(settings.emailjsPublicKey);
@@ -1251,7 +1272,8 @@ ${settings.practiceContact||''}`);
       booking_url: 'https://' + bookUrl.replace(/^https?:\/\//, ''),
       from_name: settings.practiceName || 'Eyes at the Aviary',
       reply_to: settings.practiceContact || '',
-      message: 'Dear ' + s.parentName + ',\n\nPlease find the vision screening results for ' + s.firstName + ' ' + s.lastName + ', conducted at ' + s.school + '.\n\nRECOMMENDATION:\n' + recText + '\n\nPlease book your appointment at: https://' + bookUrl.replace(/^https?:\/\//, '') + '\n\nPLEASE NOTE: A screening can never replace a full comprehensive visual examination.\n\nKind regards,\nMartelie Burger - B.Optom(UFS) FOA (SA) Prof Cert Paeds(UK)\nMieke Vermeulen - B.Optom(UFS)\nEyes at the Aviary\n' + (settings.practiceContact||'')
+      download_link: downloadLink,
+      message: 'Dear ' + s.parentName + ',\n\nPlease find the vision screening results for ' + s.firstName + ' ' + s.lastName + ', conducted at ' + s.school + '.\n\nRECOMMENDATION:\n' + recText + '\n\nDOWNLOAD YOUR REPORT:\n' + downloadLink + '\n\nPlease book your appointment at: https://' + bookUrl.replace(/^https?:\/\//, '') + '\n\nPLEASE NOTE: A screening can never replace a full comprehensive visual examination.\n\nKind regards,\nMartelie Burger - B.Optom(UFS) FOA (SA) Prof Cert Paeds(UK)\nMieke Vermeulen - B.Optom(UFS)\nEyes at the Aviary\n' + (settings.practiceContact||'')
     });
     s.status = 'sent'; saveStudent(s);
     showToast('Report emailed to ' + s.parentEmail + ' successfully!');
@@ -1345,7 +1367,55 @@ function clearAllData() {
 }
 function showToast(msg) { const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),3000); }
 
-load(); loadSettingsUI();
+// ═══════ REPORT DOWNLOAD MODE ═══════
+const urlParams = new URLSearchParams(window.location.search);
+const reportId = urlParams.get('report');
+
+function downloadReport(id) {
+  const btn = document.getElementById('dlBtn');
+  btn.textContent = 'Loading...';
+  if (!db) { btn.textContent = 'Error — database not available'; return; }
+  db.ref('reports/' + id).once('value').then(snap => {
+    const data = snap.val();
+    if (data && data.pdf) {
+      const link = document.createElement('a');
+      link.href = data.pdf;
+      link.download = 'Vision_Screening_Report_' + (data.childName||'').replace(/ /g,'_') + '.pdf';
+      link.click();
+      btn.textContent = 'Downloaded!';
+      btn.style.background = '#16a34a';
+      btn.style.color = 'white';
+    } else {
+      btn.textContent = 'Report not found';
+      btn.style.background = '#dc2626';
+      btn.style.color = 'white';
+    }
+  }).catch(() => { btn.textContent = 'Error — try again'; });
+}
+
+if (reportId) {
+  // Parent clicked download link — show download page only
+  document.querySelector('.header').innerHTML = '<div class="header-brand"><h1>Eyes at the Aviary</h1></div>';
+  document.getElementById('mainNav').style.display = 'none';
+  document.querySelectorAll('.page').forEach(p => { p.classList.remove('active'); p.style.display = 'none'; });
+  const dlPage = document.createElement('div');
+  dlPage.style.cssText = 'min-height:80vh;display:flex;align-items:center;justify-content:center;padding:20px;';
+  dlPage.innerHTML = '<div style="background:white;border-radius:16px;padding:40px;text-align:center;max-width:400px;box-shadow:0 4px 20px rgba(0,0,0,0.1);"><div style="font-size:48px;margin-bottom:16px;">📋</div><h2 style="color:#1a1a1a;margin-bottom:8px;">Vision Screening Report</h2><p style="color:#666;margin-bottom:24px;">Eyes at the Aviary</p><button id="dlBtn" onclick="downloadReport(\'' + reportId + '\')" style="background:#d4a017;color:#1a1a1a;border:none;padding:14px 32px;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;">Download PDF Report</button><p style="margin-top:20px;font-size:12px;color:#666;">Click the button to download your child\'s screening report.</p></div>';
+  document.body.appendChild(dlPage);
+} else {
+  // ═══════ ADMIN MODE ═══════
+  const isAdmin = urlParams.has('admin');
+  if (!isAdmin) {
+    // Parent mode: hide dashboard, settings, and nav bar
+    document.getElementById('mainNav').style.display = 'none';
+    document.getElementById('page-dashboard').remove();
+    document.getElementById('page-settings').remove();
+    // Show only registration
+    document.getElementById('page-registration').classList.add('active');
+  }
+
+  load(); if (isAdmin) loadSettingsUI();
+}
 </script>
 </body>
 </html>
